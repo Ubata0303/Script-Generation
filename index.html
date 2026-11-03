@@ -1,0 +1,637 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hudl Script Generator</title>
+    <script src="https://cdn.tailwindcss.com/3.4.5"></script>
+    <script src="https://unpkg.com/vue@3.4.38/dist/vue.global.prod.js"></script>
+    <!-- SheetJS for Excel/CSV parsing -->
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+</head>
+<body class="bg-gray-100 p-8 font-sans">
+    <div id="app" class="max-w-6xl mx-auto">
+        <h1 class="text-3xl font-bold mb-2">🏈 Hudl Script Generator Ver4</h1>
+        <p class="text-gray-600 mb-8">ターミナルや環境構築は不要です。Hudlのエクスポートデータ（Excel/CSV）を読み込み、シチュエーションに応じた練習スクリプトを自動生成します。</p>
+
+        <!-- データのアップロード -->
+        <div class="bg-white p-6 rounded-lg shadow-md mb-8">
+            <h2 class="text-xl font-bold mb-4">1. Hudlデータのアップロード</h2>
+            <input type="file" ref="fileInput" @change="handleFileUpload" accept=".csv, .xlsx, .xls" class="block w-full text-sm text-gray-500
+                file:mr-4 file:py-2 file:px-4
+                file:rounded-full file:border-0
+                file:text-sm file:font-semibold
+                file:bg-blue-50 file:text-blue-700
+                hover:file:bg-blue-100 mb-4" />
+            <div v-if="hudlData.length > 0" class="flex justify-between items-center mt-2">
+                <div class="text-green-600 font-semibold">
+                    ✓ データの読み込みに成功しました（{{ hudlData.length }} 件のプレー）
+                </div>
+                <button @click="clearData" class="bg-red-100 text-red-600 px-4 py-2 rounded font-bold hover:bg-red-200 text-sm">
+                    🗑️ データをクリア
+                </button>
+            </div>
+            <div v-if="errorMessage" class="text-red-600 font-semibold mt-2">
+                {{ errorMessage }}
+            </div>
+        </div>
+
+        <!-- ブロックの構成 -->
+        <div class="bg-white p-6 rounded-lg shadow-md mb-8">
+            <div class="flex flex-wrap justify-between items-center gap-2 mb-4">
+                <h2 class="text-xl font-bold">2. スクリプト構成の指定</h2>
+                <button @click="clearAllBlocks" class="bg-red-100 text-red-600 px-4 py-2 rounded font-bold hover:bg-red-200 text-sm">
+                    🗑️ ブロックを一括クリア
+                </button>
+            </div>
+
+            <!-- パターン管理 -->
+            <div class="border border-indigo-200 bg-indigo-50 p-4 rounded-md mb-6">
+                <h3 class="font-bold text-indigo-800 mb-3">📁 パターン</h3>
+                <div class="flex flex-wrap gap-2 items-center mb-3">
+                    <select v-model="selectedPatternId" class="rounded-md border p-2 min-w-[220px] bg-white">
+                        <option value="">-- パターンを選択 --</option>
+                        <option v-for="p in patterns" :key="p.id" :value="p.id">{{ p.name }}（{{ p.blocks.length }}ブロック）</option>
+                    </select>
+                    <div class="flex items-center bg-white border border-indigo-200 rounded-md px-2 py-1">
+                        <span class="text-sm font-bold text-indigo-800 mr-1">×</span>
+                        <input type="number" v-model.number="patternRepeatCount" min="1" max="20" class="w-14 text-center p-1 border rounded text-sm font-semibold" />
+                        <span class="text-xs text-gray-600 ml-1">回</span>
+                    </div>
+                    <button @click="loadPattern" :disabled="!selectedPatternId" class="bg-indigo-600 text-white px-4 py-2 rounded font-semibold hover:bg-indigo-700 disabled:opacity-40" title="現在のブロックを消して、選択したパターン（×回数分）に入れ替えます">📂 呼び出す</button>
+                    <button @click="appendPattern" :disabled="!selectedPatternId" class="bg-indigo-500 text-white px-4 py-2 rounded font-semibold hover:bg-indigo-600 disabled:opacity-40" title="現在のブロックの一番下に、選択したパターン（×回数分）を続けて追加します">➕ 下に追加</button>
+                    <button @click="overwritePattern" :disabled="!selectedPatternId" class="bg-white border border-indigo-300 text-indigo-700 px-4 py-2 rounded font-semibold hover:bg-indigo-100 disabled:opacity-40">💾 上書き保存</button>
+                    <button @click="renamePattern" :disabled="!selectedPatternId" class="bg-white border border-indigo-300 text-indigo-700 px-4 py-2 rounded font-semibold hover:bg-indigo-100 disabled:opacity-40">✏️ 名前変更</button>
+                    <button @click="deletePattern" :disabled="!selectedPatternId" class="bg-white border border-red-300 text-red-600 px-4 py-2 rounded font-semibold hover:bg-red-50 disabled:opacity-40">🗑️ 削除</button>
+                </div>
+                <div class="flex flex-wrap gap-2 items-center">
+                    <button @click="savePattern" class="bg-indigo-100 text-indigo-800 px-4 py-2 rounded font-semibold hover:bg-indigo-200">
+                        ➕ 今の構成を新しいパターンとして保存
+                    </button>
+                    <button @click="exportPatterns" :disabled="patterns.length === 0" class="bg-white border border-indigo-300 text-indigo-700 px-3 py-2 rounded font-semibold hover:bg-indigo-100 text-sm disabled:opacity-40" title="保存したパターンをファイルとしてPCにバックアップ保存します">
+                        📤 パターンをファイル保存
+                    </button>
+                    <label class="bg-white border border-indigo-300 text-indigo-700 px-3 py-2 rounded font-semibold hover:bg-indigo-100 text-sm cursor-pointer" title="保存したパターンファイルを読み込みます">
+                        📥 パターンファイル読込
+                        <input type="file" accept=".json" @change="importPatterns" class="hidden" />
+                    </label>
+                </div>
+                <p class="text-xs text-gray-500 mt-2">※Safari等でファイル名を変更したりブラウザを閉じたりしても消えないよう、大事なパターンは「📤 パターンをファイル保存」でバックアップできます。</p>
+            </div>
+
+            <!-- コピー中の条件インジケーター -->
+            <div v-if="copiedConditions" class="bg-amber-50 border border-amber-200 text-amber-800 px-4 py-2 rounded-md mb-4 text-sm flex justify-between items-center">
+                <div>
+                    <span class="font-bold">📋 コピー中の条件：</span>
+                    Hash: <b>{{ copiedConditions.hash === 'Any' ? '指定なし' : copiedConditions.hash }}</b> ／
+                    Down: <b>{{ copiedConditions.down === 'Any' ? '指定なし' : copiedConditions.down }}</b> ／
+                    Play Type: <b>{{ copiedConditions.playType === 'Any' ? '指定なし' : copiedConditions.playType }}</b> ／
+                    Distance: <b>{{ copiedConditions.distMin || 0 }}〜{{ copiedConditions.distMax || 0 }}yd</b> ／
+                    Ball On: <b>{{ copiedConditions.yardMin || 0 }}〜{{ copiedConditions.yardMax || 0 }}yd</b>
+                    <span class="text-xs text-amber-600 ml-2">（※貼り付け時はデプス・プレイ数は変わりません）</span>
+                </div>
+                <button @click="copiedConditions = null" class="text-xs text-amber-700 hover:underline ml-4">クリア</button>
+            </div>
+            
+            <div v-for="(block, index) in blocks" :key="index" class="border p-4 rounded-md mb-4 bg-gray-50 relative">
+                <div class="flex flex-wrap justify-between items-center gap-2 mb-4">
+                    <h3 class="font-bold text-lg">ブロック {{ index + 1 }}</h3>
+                    <div class="flex flex-wrap items-center gap-2 text-sm">
+                        <button @click="copyConditions(block)" class="bg-white border border-gray-300 text-gray-700 px-3 py-1 rounded hover:bg-gray-100 font-medium" title="Hash / Down / Play Type / Distance / Ball On の条件をコピーします">
+                            📋 コピー
+                        </button>
+                        <button @click="pasteConditions(block)" :disabled="!copiedConditions" class="bg-amber-100 border border-amber-300 text-amber-800 px-3 py-1 rounded hover:bg-amber-200 font-medium disabled:opacity-40" title="コピーした条件をこのブロックに貼り付けます（デプス・プレイ数はそのまま）">
+                            📥 ペースト
+                        </button>
+                        <button @click="applyConditionsToAll(block, index)" :disabled="blocks.length <= 1" class="bg-teal-50 border border-teal-300 text-teal-700 px-3 py-1 rounded hover:bg-teal-100 font-medium disabled:opacity-40" title="このブロックのシチュエーション条件を他の全ブロックに一括反映します">
+                            ⚡ 全ブロックに反映
+                        </button>
+                        <button @click="duplicateBlock(index)" class="bg-blue-50 border border-blue-200 text-blue-700 px-3 py-1 rounded hover:bg-blue-100 font-medium" title="このブロックのすぐ下に同じブロックを複製します">
+                            📄 複製
+                        </button>
+                        <button @click="removeBlock(index)" class="text-red-500 hover:text-red-700 font-bold px-2 py-1">
+                            ✖ 削除
+                        </button>
+                    </div>
+                </div>
+                
+                <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700">デプス</label>
+                        <input type="text" v-model="block.depth" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 border" placeholder="例: 1st">
+                        
+                        <label class="block text-sm font-medium text-gray-700 mt-3">プレイ数</label>
+                        <input type="number" v-model.number="block.plays" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 border" min="1">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700">Hash</label>
+                        <select v-model="block.hash" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 border">
+                            <option value="Any">指定なし</option>
+                            <option value="R">R（M含む）</option>
+                            <option value="L">L（M含む）</option>
+                            <option value="M">Mのみ</option>
+                        </select>
+                        
+                        <label class="block text-sm font-medium text-gray-700 mt-3">Down</label>
+                        <select v-model="block.down" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 border">
+                            <option value="Any">指定なし</option>
+                            <option value="1">1</option>
+                            <option value="2">2</option>
+                            <option value="3">3</option>
+                            <option value="4">4</option>
+                        </select>
+
+                        <label class="block text-sm font-medium text-gray-700 mt-3">Play Type</label>
+                        <select v-model="block.playType" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 border">
+                            <option value="Any">指定なし（ランダム）</option>
+                            <option value="Run">Run</option>
+                            <option value="Pass">Pass</option>
+                            <option value="RPO">RPO</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700">Distance (最小 yd) <span class="text-xs text-gray-500">*0で指定なし</span></label>
+                        <input type="number" v-model.number="block.distMin" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 border" min="0">
+                        
+                        <label class="block text-sm font-medium text-gray-700 mt-3">Distance (最大 yd) <span class="text-xs text-gray-500">*0で指定なし</span></label>
+                        <input type="number" v-model.number="block.distMax" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 border" min="0">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700">Ball On 最小 <span class="text-xs text-gray-500">(Goalまで 1~99yd)</span></label>
+                        <input type="number" v-model.number="block.yardMin" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 border" placeholder="例: 1" min="0" max="99">
+                        
+                        <label class="block text-sm font-medium text-gray-700 mt-3">Ball On 最大 <span class="text-xs text-gray-500">(Goalまで 1~99yd)</span></label>
+                        <input type="number" v-model.number="block.yardMax" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 border" placeholder="例: 99" min="0" max="99">
+                    </div>
+                </div>
+            </div>
+            
+            <div class="flex flex-wrap justify-between items-center gap-2">
+                <button @click="addBlock" class="bg-blue-100 text-blue-700 px-4 py-2 rounded font-semibold hover:bg-blue-200">
+                    ➕ 条件ブロックを追加
+                </button>
+                <button v-if="blocks.length > 1" @click="clearAllBlocks" class="bg-red-100 text-red-600 px-4 py-2 rounded font-bold hover:bg-red-200 text-sm">
+                    🗑️ ブロックを一括クリア
+                </button>
+            </div>
+        </div>
+
+        <!-- スクリプト生成 -->
+        <div class="bg-white p-6 rounded-lg shadow-md mb-8">
+            <h2 class="text-xl font-bold mb-4">3. スクリプトの生成</h2>
+            <button @click="generateScript" class="bg-blue-600 text-white px-6 py-3 rounded-lg font-bold hover:bg-blue-700 w-full mb-4" :disabled="hudlData.length === 0">
+                🚀 スクリプトを生成する
+            </button>
+            <div v-if="hudlData.length === 0" class="text-sm text-gray-500 mb-4">※データをアップロードすると生成できます。</div>
+
+            <div v-if="generatedScript.length > 0">
+                <div class="flex justify-between items-center mb-4">
+                    <h3 class="font-bold text-lg">生成結果</h3>
+                    <button @click="downloadCSV" class="bg-green-600 text-white px-4 py-2 rounded font-bold hover:bg-green-700">
+                        📥 CSVをダウンロード（エクセル貼り付け用）
+                    </button>
+                </div>
+                <div class="overflow-x-auto border rounded-lg">
+                    <table class="min-w-full text-sm text-left text-gray-500">
+                        <thead class="text-xs text-gray-700 uppercase bg-gray-100 border-b">
+                            <tr>
+                                <th class="px-4 py-2">Depth (※コピーされません)</th>
+                                <th class="px-4 py-2">Ball On</th>
+                                <th class="px-4 py-2">DWN</th>
+                                <th class="px-4 py-2">DIST</th>
+                                <th class="px-4 py-2">HASH</th>
+                                <th class="px-4 py-2 bg-gray-200">空欄1</th>
+                                <th class="px-4 py-2 bg-gray-200">空欄2</th>
+                                <th class="px-4 py-2">FORM</th>
+                                <th class="px-4 py-2">PERSONNEL</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr v-for="(row, index) in generatedScript" :key="index" class="bg-white border-b hover:bg-gray-50">
+                                <td class="px-4 py-2 font-bold">{{ row.depth }}</td>
+                                <td class="px-4 py-2">{{ row.ballOn }}</td>
+                                <td class="px-4 py-2">{{ row.dwn }}</td>
+                                <td class="px-4 py-2">{{ row.dist }}</td>
+                                <td class="px-4 py-2">{{ row.hash }}</td>
+                                <td class="px-4 py-2 bg-gray-50"></td>
+                                <td class="px-4 py-2 bg-gray-50"></td>
+                                <td class="px-4 py-2">{{ row.form }}</td>
+                                <td class="px-4 py-2">{{ row.personnel }}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const { createApp } = Vue;
+        const PATTERN_KEY = "hudlScriptPatterns_v1";
+        // ブロックの既定値（古いパターンで欠けている項目もこれで補う）
+        const BLOCK_DEFAULTS = { depth: "1st", plays: 1, hash: "Any", down: "Any", playType: "Any", distMin: 0, distMax: 0, yardMin: 0, yardMax: 0 };
+
+        createApp({
+            data() {
+                return {
+                    hudlData: [],
+                    errorMessage: "",
+                    blocks: [
+                        { depth: "1st", plays: 1, hash: "R", down: "Any", playType: "Any", distMin: 0, distMax: 0, yardMin: 0, yardMax: 0 }
+                    ],
+                    generatedScript: [],
+                    patterns: [],
+                    selectedPatternId: "",
+                    patternRepeatCount: 1,
+                    copiedConditions: null
+                }
+            },
+            mounted() {
+                let loaded = [];
+                try {
+                    const saved = localStorage.getItem(PATTERN_KEY);
+                    if (saved) loaded = JSON.parse(saved);
+                } catch (e) {}
+                // Safariでfile://リロード時にlocalStorageが消える対策としてwindow.nameからも復元
+                if ((!loaded || loaded.length === 0) && window.name && window.name.startsWith("HUDL_PATTERNS:")) {
+                    try {
+                        loaded = JSON.parse(window.name.slice("HUDL_PATTERNS:".length));
+                        localStorage.setItem(PATTERN_KEY, JSON.stringify(loaded));
+                    } catch (e) {}
+                }
+                this.patterns = Array.isArray(loaded) ? loaded : [];
+                if (this.patterns.length > 0) {
+                    this.persistPatterns();
+                }
+            },
+            methods: {
+                persistPatterns() {
+                    const str = JSON.stringify(this.patterns);
+                    try {
+                        localStorage.setItem(PATTERN_KEY, str);
+                    } catch (e) {}
+                    try {
+                        window.name = "HUDL_PATTERNS:" + str;
+                    } catch (e) {}
+                },
+                exportPatterns() {
+                    if (this.patterns.length === 0) return;
+                    const blob = new Blob([JSON.stringify(this.patterns, null, 2)], { type: "application/json" });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = url;
+                    a.download = "hudl_patterns.json";
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                },
+                importPatterns(event) {
+                    const file = event.target.files[0];
+                    if (!file) return;
+                    const reader = new FileReader();
+                    reader.onload = (e) => {
+                        try {
+                            const imported = JSON.parse(e.target.result);
+                            if (!Array.isArray(imported)) throw new Error("Invalid format");
+                            this.patterns = imported;
+                            this.selectedPatternId = this.patterns[0]?.id || "";
+                            this.persistPatterns();
+                            alert(`パターンを ${imported.length} 件読み込みました！`);
+                        } catch (err) {
+                            alert("パターンファイルの読み込みに失敗しました。");
+                        }
+                        event.target.value = "";
+                    };
+                    reader.readAsText(file);
+                },
+                cloneBlocks(blocks) {
+                    return JSON.parse(JSON.stringify(blocks));
+                },
+                savePattern() {
+                    if (this.blocks.length === 0) {
+                        alert("ブロックが1つもありません。");
+                        return;
+                    }
+                    let n = this.patterns.length + 1;
+                    while (this.patterns.some(p => p.name === `パターン${n}`)) n++;
+                    const name = prompt("パターン名を入力してください", `パターン${n}`);
+                    if (name === null) return;
+                    const p = {
+                        id: String(Date.now()),
+                        name: name.trim() || `パターン${n}`,
+                        blocks: this.cloneBlocks(this.blocks)
+                    };
+                    this.patterns.push(p);
+                    this.selectedPatternId = p.id;
+                    this.persistPatterns();
+                },
+                getSelectedPattern() {
+                    return this.patterns.find(p => p.id === this.selectedPatternId);
+                },
+                buildPatternBlocks(p) {
+                    const count = Math.max(1, parseInt(this.patternRepeatCount, 10) || 1);
+                    const result = [];
+                    for (let r = 0; r < count; r++) {
+                        const cloned = this.cloneBlocks(p.blocks).map(b => {
+                            const filled = { ...BLOCK_DEFAULTS };
+                            for (const k of Object.keys(b)) {
+                                if (b[k] !== undefined && b[k] !== null && b[k] !== "") filled[k] = b[k];
+                            }
+                            return filled;
+                        });
+                        result.push(...cloned);
+                    }
+                    return result;
+                },
+                loadPattern() {
+                    const p = this.getSelectedPattern();
+                    if (!p) return;
+                    this.blocks = this.buildPatternBlocks(p);
+                    this.generatedScript = [];
+                },
+                appendPattern() {
+                    const p = this.getSelectedPattern();
+                    if (!p) return;
+                    this.blocks.push(...this.buildPatternBlocks(p));
+                    this.generatedScript = [];
+                },
+                overwritePattern() {
+                    const p = this.getSelectedPattern();
+                    if (!p) return;
+                    if (!confirm(`「${p.name}」を今の構成で上書きしますか？`)) return;
+                    p.blocks = this.cloneBlocks(this.blocks);
+                    this.persistPatterns();
+                },
+                renamePattern() {
+                    const p = this.getSelectedPattern();
+                    if (!p) return;
+                    const name = prompt("新しいパターン名", p.name);
+                    if (name === null || !name.trim()) return;
+                    p.name = name.trim();
+                    this.persistPatterns();
+                },
+                deletePattern() {
+                    const p = this.getSelectedPattern();
+                    if (!p) return;
+                    if (!confirm(`「${p.name}」を削除しますか？`)) return;
+                    this.patterns = this.patterns.filter(x => x.id !== p.id);
+                    this.selectedPatternId = "";
+                    this.persistPatterns();
+                },
+                clearData() {
+                    this.hudlData = [];
+                    this.errorMessage = "";
+                    this.generatedScript = [];
+                    if (this.$refs.fileInput) {
+                        this.$refs.fileInput.value = "";
+                    }
+                },
+                handleFileUpload(event) {
+                    const file = event.target.files[0];
+                    if (!file) return;
+
+                    const reader = new FileReader();
+                    reader.onload = (e) => {
+                        try {
+                            const data = new Uint8Array(e.target.result);
+                            const workbook = XLSX.read(data, { type: 'array' });
+                            const firstSheetName = workbook.SheetNames[0];
+                            const worksheet = workbook.Sheets[firstSheetName];
+                            const json = XLSX.utils.sheet_to_json(worksheet, { defval: "" });
+                            
+                            if (json.length > 0) {
+                                const cols = Object.keys(json[0]);
+                                const required = ["YARD LN", "DN", "DIST", "HASH", "OFF FORM", "OFF PLAY", "OPP TEAM", "OF PLAY#", "PLAY TYPE (D)", "PERSONNEL"];
+                                const missing = required.filter(col => {
+                                    return !cols.some(c => this.normKey(c) === this.normKey(col));
+                                });
+                                
+                                if (missing.length > 0) {
+                                    this.errorMessage = `エラー: 以下の必須列が見つかりません: ${missing.join(", ")}`;
+                                    this.hudlData = [];
+                                    return;
+                                }
+                            }
+                            
+                            json.forEach((row, idx) => { row._hudl_id = idx; });
+                            this.hudlData = json;
+                            this.errorMessage = "";
+                        } catch (error) {
+                            this.errorMessage = "ファイルの読み込みに失敗しました。正しいHudlのExcel/CSVファイルか確認してください。";
+                            console.error(error);
+                        }
+                    };
+                    reader.readAsArrayBuffer(file);
+                },
+                addBlock() {
+                    this.blocks.push({ ...BLOCK_DEFAULTS });
+                },
+                duplicateBlock(index) {
+                    const copy = JSON.parse(JSON.stringify(this.blocks[index]));
+                    this.blocks.splice(index + 1, 0, copy);
+                },
+                copyConditions(block) {
+                    this.copiedConditions = {
+                        hash: block.hash,
+                        down: block.down,
+                        playType: block.playType,
+                        distMin: block.distMin,
+                        distMax: block.distMax,
+                        yardMin: block.yardMin,
+                        yardMax: block.yardMax
+                    };
+                },
+                pasteConditions(block) {
+                    if (!this.copiedConditions) return;
+                    block.hash = this.copiedConditions.hash;
+                    block.down = this.copiedConditions.down;
+                    block.playType = this.copiedConditions.playType;
+                    block.distMin = this.copiedConditions.distMin;
+                    block.distMax = this.copiedConditions.distMax;
+                    block.yardMin = this.copiedConditions.yardMin;
+                    block.yardMax = this.copiedConditions.yardMax;
+                },
+                applyConditionsToAll(sourceBlock, sourceIndex) {
+                    this.copyConditions(sourceBlock);
+                    this.blocks.forEach((b, idx) => {
+                        if (idx !== sourceIndex) {
+                            this.pasteConditions(b);
+                        }
+                    });
+                },
+                removeBlock(index) {
+                    this.blocks.splice(index, 1);
+                },
+                clearAllBlocks() {
+                    if (!confirm("すべてのブロックをクリアして初期状態（1ブロック）に戻しますか？")) return;
+                    this.blocks = [{ depth: "1st", plays: 1, hash: "R", down: "Any", playType: "Any", distMin: 0, distMax: 0, yardMin: 0, yardMax: 0 }];
+                    this.generatedScript = [];
+                },
+                // 列名の比較用：空白・改行を除去して大文字化（"PLAY TYPE (D)" と "PLAY TYPE(D)" を同一視）
+                normKey(name) {
+                    return String(name).replace(/\s+/g, "").toUpperCase();
+                },
+                getRowVal(row, colName) {
+                    const target = this.normKey(colName);
+                    for (const key of Object.keys(row)) {
+                        if (this.normKey(key) === target) {
+                            return row[key];
+                        }
+                    }
+                    return "";
+                },
+                formatVal(val) {
+                    if (val === undefined || val === null) return "";
+                    return String(val).trim();
+                },
+                shuffle(array) {
+                    let currentIndex = array.length, randomIndex;
+                    while (currentIndex != 0) {
+                        randomIndex = Math.floor(Math.random() * currentIndex);
+                        currentIndex--;
+                        [array[currentIndex], array[randomIndex]] = [array[randomIndex], array[currentIndex]];
+                    }
+                    return array;
+                },
+                generateScript() {
+                    if (this.hudlData.length === 0) return;
+                    this.hudlData.forEach((row, idx) => {
+                        if (row._hudl_id === undefined) row._hudl_id = idx;
+                    });
+                    this.generatedScript = [];
+                    const usedPlayIds = new Set();
+                    
+                    for (let i = 0; i < this.blocks.length; i++) {
+                        const block = this.blocks[i];
+                        
+                        let filtered = this.hudlData.filter(row => {
+                            // スクリプト全体で一度選ばれたプレーは除外（重複防止）
+                            if (usedPlayIds.has(row._hudl_id)) return false;
+
+                            if (block.hash !== "Any") {
+                                const h = String(this.getRowVal(row, "HASH")).trim().toUpperCase();
+                                const isMiddle = (h === "M" || h === "MIDDLE");
+                                if (block.hash === "R") {
+                                    if (h !== "R" && !isMiddle) return false;
+                                } else if (block.hash === "L") {
+                                    if (h !== "L" && !isMiddle) return false;
+                                } else if (block.hash === "M") {
+                                    if (!isMiddle) return false;
+                                } else if (h !== block.hash) {
+                                    return false;
+                                }
+                            }
+                            if (block.down !== "Any") {
+                                const d = String(this.getRowVal(row, "DN")).trim();
+                                if (d !== String(block.down)) return false;
+                            }
+                            if (block.playType && block.playType !== "Any") {
+                                const pt = String(this.getRowVal(row, "PLAY TYPE (D)")).trim().toUpperCase();
+                                // RPO は "RPO(Run)" / "RPO(Pass)" の両方に一致させる
+                                if (block.playType === "RPO") {
+                                    if (!pt.startsWith("RPO")) return false;
+                                } else if (pt !== block.playType.toUpperCase()) return false;
+                            }
+                            if (block.distMin > 0) {
+                                const dist = Number(this.getRowVal(row, "DIST"));
+                                if (dist < block.distMin) return false;
+                            }
+                            if (block.distMax > 0) {
+                                const dist = Number(this.getRowVal(row, "DIST"));
+                                if (dist > block.distMax) return false;
+                            }
+                            if (block.yardMin !== 0 || block.yardMax !== 0) {
+                                const origYln = Number(this.getRowVal(row, "YARD LN"));
+                                if (isNaN(origYln)) return false;
+                                
+                                const yardsToGoal = origYln < 0 ? 100 + origYln : origYln;
+                                
+                                if (block.yardMin !== 0 && yardsToGoal < block.yardMin) return false;
+                                if (block.yardMax !== 0 && yardsToGoal > block.yardMax) return false;
+                            }
+                            return true;
+                        });
+                        
+                        if (filtered.length === 0) {
+                            alert(`ブロック ${i+1} (${block.depth} / ${block.plays}Plays) の条件に一致する未使用のデータがありません。条件を緩めるか、他のブロックの指定を確認してください。`);
+                            continue;
+                        }
+                        
+                        let sampled = [];
+                        if (filtered.length >= block.plays) {
+                            sampled = this.shuffle([...filtered]).slice(0, block.plays);
+                        } else {
+                            // 条件に合うプレーが少ない場合、重複を避けるためにある分だけを抽出
+                            alert(`【お知らせ】ブロック ${i+1} (${block.depth}) は ${block.plays} プレイ指定されましたが、他のブロックで使用されていない条件一致プレーが ${filtered.length} 件しかなかったため、重複を避けて ${filtered.length} 件のみ抽出しました。`);
+                            sampled = this.shuffle([...filtered]);
+                        }
+                        
+                        sampled.forEach(row => {
+                            usedPlayIds.add(row._hudl_id);
+                            const opp = this.formatVal(this.getRowVal(row, "OPP TEAM"));
+                            const playNum = this.formatVal(this.getRowVal(row, "OF PLAY#"));
+                            const dn = this.formatVal(this.getRowVal(row, "DN"));
+                            const dist = this.formatVal(this.getRowVal(row, "DIST"));
+                            const hsh = this.formatVal(this.getRowVal(row, "HASH"));
+                            const form = this.formatVal(this.getRowVal(row, "OFF FORM"));
+                            const play = this.formatVal(this.getRowVal(row, "OFF PLAY"));
+                            const personnel = this.formatVal(this.getRowVal(row, "PERSONNEL"));
+                            
+                            const formStr = `vs ${opp} #${playNum} / ${dn}-${dist} / ${hsh} / ${form} / ${play}`;
+                            
+                            let ballOnDisplay = this.formatVal(this.getRowVal(row, "YARD LN"));
+                            const origYln = Number(this.getRowVal(row, "YARD LN"));
+                            if (ballOnDisplay !== "" && !isNaN(origYln)) {
+                                ballOnDisplay = String(origYln < 0 ? 100 + origYln : origYln);
+                            }
+                            
+                            this.generatedScript.push({
+                                depth: block.depth,
+                                ballOn: ballOnDisplay,
+                                dwn: dn,
+                                dist: dist,
+                                hash: hsh,
+                                form: formStr,
+                                personnel: personnel
+                            });
+                        });
+                    }
+                },
+                downloadCSV() {
+                    if (this.generatedScript.length === 0) return;
+                    
+                    let csvContent = "\uFEFF"; // BOM for Excel
+                    // \u30AB\u30F3\u30DE\u30FB\u30C0\u30D6\u30EB\u30AF\u30A9\u30FC\u30C8\u30FB\u6539\u884C\u3092\u542B\u3080\u5024\u3082\u305A\u308C\u306A\u3044\u3088\u3046\u306B\u30A8\u30B9\u30B1\u30FC\u30D7
+                    const esc = v => {
+                        const s = String(v ?? "");
+                        return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+                    };
+
+                    this.generatedScript.forEach(row => {
+                        const rowArray = [
+                            row.ballOn,
+                            row.dwn,
+                            row.dist,
+                            row.hash,
+                            "",
+                            "",
+                            row.form,
+                            row.personnel
+                        ];
+                        csvContent += rowArray.map(esc).join(",") + "\r\n";
+                    });
+                    
+                    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                    const url = URL.createObjectURL(blob);
+                    const link = document.createElement("a");
+                    link.setAttribute("href", url);
+                    link.setAttribute("download", "script_export.csv");
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                }
+            }
+        }).mount('#app')
+    </script>
+</body>
+</html>
